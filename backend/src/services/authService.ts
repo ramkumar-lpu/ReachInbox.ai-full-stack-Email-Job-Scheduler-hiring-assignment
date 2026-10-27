@@ -26,10 +26,49 @@ export function verifyToken(token: string): AuthTokenPayload | null {
 }
 
 /**
+ * Helper to ensure a persistent demo tenant user and default sender exist.
+ * Used exclusively when DEMO_MODE is true to provide a seamless, friction-free
+ * hiring assignment review experience without requiring OAuth.
+ */
+export async function getOrCreateDemoUser(): Promise<User> {
+  const user = await prisma.user.upsert({
+    where: { email: 'demo@reachinbox.test' },
+    update: {},
+    create: {
+      email: 'demo@reachinbox.test',
+      name: 'ReachInbox Hiring Reviewer',
+      avatarUrl: 'https://avatar.iran.liara.run/public/boy',
+    },
+  });
+
+  // Ensure an active sender exists for the demo tenant so composing emails works immediately
+  const existingSender = await prisma.sender.findFirst({
+    where: { userId: user.id },
+  });
+
+  if (!existingSender) {
+    await prisma.sender.create({
+      data: {
+        userId: user.id,
+        email: 'demo-sender@reachinbox.test',
+        smtpHost: 'smtp.ethereal.email',
+        smtpPort: 587,
+        smtpUsername: 'demo_reviewer@ethereal.email',
+        smtpPassword: 'demo_ethereal_password',
+        hourlyLimit: 100,
+      },
+    });
+  }
+
+  return user;
+}
+
+/**
  * Authentication Middleware:
  * Inspects `token` HTTP cookie or `Authorization: Bearer <token>` header.
  * 
  * Security policies:
+ * - Demo Mode: Seamlessly associates requests with verified demo reviewer tenant.
  * - Production: Strictly requires a valid token; unauthenticated requests receive HTTP 401.
  * - Development: Only permits fallback to `dev@reachinbox.test` if ALLOW_DEV_AUTH is explicitly true.
  */
@@ -54,6 +93,13 @@ export async function authenticateUser(
         return next();
       }
     }
+  }
+
+  // Demo Mode: Friction-free reviewer access to email scheduler
+  if (env.DEMO_MODE) {
+    const demoUser = await getOrCreateDemoUser();
+    (req as any).user = demoUser;
+    return next();
   }
 
   // In production, strictly reject with 401
@@ -90,7 +136,7 @@ export async function authenticateUser(
 
 /**
  * Optional Authentication Middleware:
- * Attaches user to `req.user` if valid token exists, but does not block if unauthenticated.
+ * Attaches user to `req.user` if valid token exists, or demo user if DEMO_MODE is true.
  */
 export async function optionalAuthenticate(
   req: Request,
@@ -110,8 +156,14 @@ export async function optionalAuthenticate(
       });
       if (user) {
         (req as any).user = user;
+        return next();
       }
     }
+  }
+
+  if (env.DEMO_MODE) {
+    const demoUser = await getOrCreateDemoUser();
+    (req as any).user = demoUser;
   }
 
   next();

@@ -69,12 +69,13 @@ export async function scheduleEmails(payload: SchedulePayload): Promise<{
 
 export async function fetchCurrentUser(): Promise<{
   authenticated: boolean;
+  demoMode?: boolean;
   user?: {
     id: string;
     email: string;
     name?: string;
     avatarUrl?: string;
-    hasGoogleAuth: boolean;
+    hasGoogleAuth?: boolean;
   };
 }> {
   try {

@@ -80,7 +80,7 @@ authRouter.get('/google/callback', async (req: Request, res: Response) => {
 
 /**
  * GET /api/auth/me
- * Returns current authenticated user
+ * Returns current authenticated user (or demo user in DEMO_MODE)
  */
 authRouter.get('/me', (req: Request, res: Response) => {
   const user = (req as any).user;
@@ -92,6 +92,7 @@ authRouter.get('/me', (req: Request, res: Response) => {
   res.status(200).json({
     success: true,
     authenticated: true,
+    demoMode: env.DEMO_MODE,
     user: {
       id: user.id,
       email: user.email,

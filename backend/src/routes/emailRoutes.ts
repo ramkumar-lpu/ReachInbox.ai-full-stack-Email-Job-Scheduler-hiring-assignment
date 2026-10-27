@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/client';
 import { emailQueue } from '../queues/emailQueue';
 import { indexEmail, searchEmailsInEs } from '../services/searchService';
+import { getOrCreateDemoUser } from '../services/authService';
 import { env } from '../config/env';
 
 export const emailRouter = Router();
@@ -24,15 +25,22 @@ const scheduleEmailSchema = z.object({
 
 /**
  * Helper to resolve the authenticated user.
+ * In Demo Mode:
+ * - Automatically falls back to getOrCreateDemoUser() for seamless review.
  * In production:
  * - Strictly requires req.user (attached by authenticateUser middleware).
- * - Never creates or falls back to dev@reachinbox.test.
+ * - Never creates or falls back to dev@reachinbox.test when DEMO_MODE is false.
  * In development:
  * - Falls back to dev user only when ALLOW_DEV_AUTH is explicitly true.
  */
 async function resolveUser(req: Request): Promise<any | null> {
   const user = (req as any).user;
   if (user) return user;
+
+  // In demo mode, use persistent demo reviewer user
+  if (env.DEMO_MODE) {
+    return getOrCreateDemoUser();
+  }
 
   // In production, never bypass authentication
   if (env.NODE_ENV === 'production') {

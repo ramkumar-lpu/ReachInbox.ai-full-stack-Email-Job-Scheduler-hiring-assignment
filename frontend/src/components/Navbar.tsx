@@ -1,5 +1,5 @@
 import React from 'react';
-import { Mail, Plus, ExternalLink, RefreshCw, MessageSquare, Check, LogIn } from 'lucide-react';
+import { Mail, Plus, ExternalLink, RefreshCw, MessageSquare, Check } from 'lucide-react';
 
 interface Props {
   onOpenCompose: () => void;
@@ -9,7 +9,6 @@ interface Props {
     email: string;
     name?: string;
     avatarUrl?: string;
-    hasGoogleAuth: boolean;
   } | null;
   slackConnected?: boolean;
 }
@@ -18,7 +17,6 @@ export const Navbar: React.FC<Props> = ({
   onOpenCompose,
   onRefresh,
   loading,
-  currentUser,
   slackConnected,
 }) => {
   return (
@@ -46,6 +44,12 @@ export const Navbar: React.FC<Props> = ({
 
         {/* Integrations & Actions */}
         <div className="flex items-center gap-2 sm:gap-3">
+          {/* Demo Mode Status Indicator */}
+          <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-300">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+            <span className="font-medium text-slate-200">Demo Mode Active</span>
+          </div>
+
           {/* Slack Integration CTA */}
           <a
             href="/api/slack/connect"
@@ -67,42 +71,17 @@ export const Navbar: React.FC<Props> = ({
             )}
           </a>
 
-          {/* Bull Board External Link */}
+          {/* Bull Board Link (Relative path with demo token for seamless access) */}
           <a
-            href="http://localhost:4000/admin/queues"
+            href="/admin/queues?token=reachinbox2026"
             target="_blank"
             rel="noopener noreferrer"
+            title="BullMQ Queue Dashboard (Credentials: admin / reachinbox2026)"
             className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 transition"
           >
             <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />
             Bull Board UI
           </a>
-
-          {/* User Auth Info / Google Login */}
-          {currentUser?.hasGoogleAuth ? (
-            <div className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-200">
-              {currentUser.avatarUrl ? (
-                <img
-                  src={currentUser.avatarUrl}
-                  alt={currentUser.name || 'User'}
-                  className="w-5 h-5 rounded-full object-cover"
-                />
-              ) : (
-                <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-[10px]">
-                  {currentUser.email[0]?.toUpperCase()}
-                </div>
-              )}
-              <span className="hidden lg:inline font-medium">{currentUser.name || currentUser.email}</span>
-            </div>
-          ) : (
-            <a
-              href="/api/auth/google"
-              className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition"
-            >
-              <LogIn className="w-3.5 h-3.5 text-indigo-400" />
-              Sign in with Google
-            </a>
-          )}
 
           {/* Refresh Action */}
           <button

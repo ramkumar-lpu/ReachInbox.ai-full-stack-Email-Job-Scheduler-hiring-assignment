@@ -124,6 +124,14 @@ const envSchema = z
         return false;
       }, z.boolean())
       .default(false),
+    // Demo mode: allows friction-free assignment review with demo tenant
+    DEMO_MODE: z
+      .preprocess((val) => {
+        if (typeof val === 'string') return val.trim().toLowerCase() === 'true';
+        if (typeof val === 'boolean') return val;
+        return false;
+      }, z.boolean())
+      .default(false),
     GOOGLE_CLIENT_ID: z.string().default(''),
     GOOGLE_CLIENT_SECRET: z.string().default(''),
     GOOGLE_CALLBACK_URL: z.string().default(''),
@@ -132,8 +140,8 @@ const envSchema = z
     SLACK_CALLBACK_URL: z.string().default(''),
   })
   .superRefine((data, ctx) => {
-    // Production security validations
-    if (data.NODE_ENV === 'production') {
+    // Production security validations (relaxed only when DEMO_MODE is explicitly enabled)
+    if (data.NODE_ENV === 'production' && !data.DEMO_MODE) {
       if (
         !data.JWT_SECRET ||
         INSECURE_JWT_SECRETS.has(data.JWT_SECRET.toLowerCase()) ||

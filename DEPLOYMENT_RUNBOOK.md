@@ -246,13 +246,18 @@ ELASTICSEARCH_URL=http://elasticsearch:9200
 # Public Origin
 FRONTEND_URL=https://scheduler.ramkumar.app
 
+# Demo Mode Configuration (Hiring Assignment Review Mode)
+# Set to 'true' to allow reviewers to immediately explore the dashboard
+DEMO_MODE=true
+
 # Secure 64-character JWT Secret (Generate via: openssl rand -hex 32)
 JWT_SECRET=paste_generated_hex_secret_here
 
-# Protected Bull Board Admin Credentials (Required in production)
+# Protected Bull Board Admin Credentials
+# In DEMO_MODE, default demo credentials are: admin / reachinbox2026
 ADMIN_ENABLED=true
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=paste_strong_admin_password_here
+ADMIN_PASSWORD=reachinbox2026
 
 # Guard: strictly false in production (prevents dev fallback)
 ALLOW_DEV_AUTH=false
@@ -378,26 +383,37 @@ curl -i https://scheduler.ramkumar.app/health
 }
 ```
 
-### 10.2 Production Authentication Verification
-Verify that unauthenticated requests receive HTTP 401 and cannot bypass authentication:
+### 10.2 Demo Mode vs Production Authentication Verification
+
+**In Demo Mode (`DEMO_MODE=true`):**
+Reviewers can immediately open the dashboard and execute scheduler APIs without signing in:
+```bash
+# Returns HTTP 200 OK with scheduled emails for the demo tenant
+curl -i https://scheduler.ramkumar.app/api/emails/scheduled
+
+# Returns HTTP 200 OK with demo user profile
+curl -i https://scheduler.ramkumar.app/api/auth/me
+```
+
+**In Normal Production Mode (`DEMO_MODE=false`):**
+Unauthenticated requests strictly receive HTTP 401:
 ```bash
 # Must return HTTP 401 Unauthorized
 curl -i https://scheduler.ramkumar.app/api/emails/scheduled
-
-# Must return HTTP 401 Unauthorized
-curl -i -X POST https://scheduler.ramkumar.app/api/emails/schedule \
-  -H "Content-Type: application/json" \
-  -d '{"subject":"Test","body":"Test","recipients":["test@example.com"]}'
 ```
 
 ### 10.3 Bull Board Admin Access Verification
 ```bash
-# Without credentials -> HTTP 401 Unauthorized
+# Direct access without credentials -> HTTP 401 Unauthorized (prompts browser Basic Auth)
 curl -i https://scheduler.ramkumar.app/admin/queues
 
-# With configured credentials -> HTTP 200 OK
-curl -i -u admin:YOUR_ADMIN_PASSWORD https://scheduler.ramkumar.app/admin/queues
+# With demo credentials (admin / reachinbox2026) -> HTTP 200 OK
+curl -i -u admin:reachinbox2026 https://scheduler.ramkumar.app/admin/queues
+
+# 1-Click demo link (frictionless reviewer access) -> HTTP 200 OK
+curl -i "https://scheduler.ramkumar.app/admin/queues?token=reachinbox2026"
 ```
+In your browser, clicking "Bull Board UI" in the top navbar opens `/admin/queues?token=reachinbox2026` immediately. Alternatively, navigating to `https://scheduler.ramkumar.app/admin/queues` will prompt for credentials (`admin` / `reachinbox2026`).
 In your browser, visit `https://scheduler.ramkumar.app/admin/queues` and enter your configured `ADMIN_USERNAME` and `ADMIN_PASSWORD` in the browser prompt.
 
 ### 10.4 Web Dashboard Verification

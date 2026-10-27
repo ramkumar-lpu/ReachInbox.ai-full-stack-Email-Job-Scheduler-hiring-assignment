@@ -28,7 +28,6 @@ export const App: React.FC = () => {
     email: string;
     name?: string;
     avatarUrl?: string;
-    hasGoogleAuth: boolean;
   } | null>(null);
   const [slackConnected, setSlackConnected] = useState(false);
 
@@ -56,7 +55,7 @@ export const App: React.FC = () => {
       }
       setSlackConnected(slackRes.connected);
     } catch (err: unknown) {
-      setError((err as Error).message || 'Failed to connect to backend API');
+      setError((err as Error).message || 'Failed to fetch email data from backend');
     } finally {
       setLoading(false);
     }
@@ -65,12 +64,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     loadData();
 
-    // Check for OAuth callbacks in URL params
+    // Check for Slack integration callback
     const params = new URLSearchParams(window.location.search);
-    if (params.get('auth') === 'success') {
-      setSuccessBanner('Successfully signed in with Google OAuth!');
-      window.history.replaceState({}, '', window.location.pathname);
-    } else if (params.get('slack') === 'connected') {
+    if (params.get('slack') === 'connected') {
       setSuccessBanner('Slack channel successfully linked for campaign notifications!');
       window.history.replaceState({}, '', window.location.pathname);
     }
@@ -100,13 +96,12 @@ export const App: React.FC = () => {
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        {/* Alerts / Banners */}
+        {/* Error Notification */}
         {error && (
           <div className="flex items-center gap-3 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
             <AlertTriangle className="w-5 h-5 shrink-0 text-rose-400" />
             <div className="flex-1">
-              <span className="font-semibold">Backend Connection Issue:</span> {error}.
-              Ensure backend server is running on port 4000 (`npm run dev`).
+              <span className="font-semibold">Notice:</span> {error}
             </div>
             <button
               onClick={loadData}
@@ -117,6 +112,7 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {/* Success Banner */}
         {successBanner && (
           <div className="flex items-center gap-3 p-4 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-sm animate-in fade-in">
             <CheckCircle2 className="w-5 h-5 shrink-0 text-emerald-400" />
@@ -245,4 +241,5 @@ export const App: React.FC = () => {
     </div>
   );
 };
+
 export default App;
