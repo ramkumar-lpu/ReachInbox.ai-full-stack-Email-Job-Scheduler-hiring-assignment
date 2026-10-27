@@ -4,6 +4,7 @@ import { EMAIL_QUEUE_NAME, EmailJobData } from '../queues/emailQueue';
 import { prisma } from '../db/client';
 import { checkAndConsumeRateLimit } from '../services/rateLimiter';
 import { sendEmailViaSmtp } from '../services/emailService';
+import { updateEmailInEs } from '../services/searchService';
 import { env } from '../config/env';
 
 /**
@@ -77,6 +78,7 @@ export function createEmailWorker(): Worker<EmailJobData> {
           attemptCount: { increment: 1 },
         },
       });
+      void updateEmailInEs(email.id, { status: 'processing' });
 
       // 4. Configurable minimum send delay buffer
       if (env.MIN_SEND_DELAY_MS > 0) {
@@ -96,6 +98,7 @@ export function createEmailWorker(): Worker<EmailJobData> {
             error: null,
           },
         });
+        void updateEmailInEs(email.id, { status: 'sent', sentAt: new Date() });
 
         console.log(`✅ [Worker Sent] Email ${email.id} successfully sent to <${email.recipient}>`);
         if (sendResult.previewUrl) {
@@ -117,6 +120,10 @@ export function createEmailWorker(): Worker<EmailJobData> {
             status: willRetry ? 'scheduled' : 'failed',
             error: errorMessage,
           },
+        });
+        void updateEmailInEs(email.id, {
+          status: willRetry ? 'scheduled' : 'failed',
+          error: errorMessage,
         });
 
         // Re-throw so BullMQ executes exponential backoff

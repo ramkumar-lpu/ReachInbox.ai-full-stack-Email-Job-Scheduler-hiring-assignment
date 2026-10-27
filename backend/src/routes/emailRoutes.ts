@@ -2,6 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { prisma } from '../db/client';
 import { emailQueue } from '../queues/emailQueue';
+import { indexEmail, searchEmailsInEs } from '../services/searchService';
 
 export const emailRouter = Router();
 
@@ -36,12 +37,12 @@ async function getOrCreateDevUser() {
 }
 
 /**
- * GET /api/senders
+ * GET /api/emails/senders
  * Returns active senders (sensitive credentials strictly excluded).
  */
-emailRouter.get('/senders', async (_req: Request, res: Response, next: NextFunction) => {
+emailRouter.get('/senders', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await getOrCreateDevUser();
+    const user = (req as any).user || (await getOrCreateDevUser());
     const senders = await prisma.sender.findMany({
       where: { userId: user.id },
       select: {
@@ -65,13 +66,68 @@ emailRouter.get('/senders', async (_req: Request, res: Response, next: NextFunct
 });
 
 /**
+ * GET /api/emails/search
+ * Full-text search across emails powered by Elasticsearch 8 with DB fallback
+ */
+emailRouter.get('/search', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const user = (req as any).user || (await getOrCreateDevUser());
+    const query = (req.query.q as string) || '';
+    const status = req.query.status as string | undefined;
+
+    const esResults = await searchEmailsInEs(user.id, query, status);
+
+    if (esResults && esResults.length > 0) {
+      res.status(200).json({
+        success: true,
+        source: 'elasticsearch',
+        count: esResults.length,
+        data: esResults,
+      });
+      return;
+    }
+
+    // Fallback to PostgreSQL relational search if ES has no hits
+    const dbResults = await prisma.email.findMany({
+      where: {
+        userId: user.id,
+        ...(status && { status: status as any }),
+        ...(query && {
+          OR: [
+            { subject: { contains: query, mode: 'insensitive' } },
+            { recipient: { contains: query, mode: 'insensitive' } },
+            { body: { contains: query, mode: 'insensitive' } },
+          ],
+        }),
+      },
+      include: {
+        sender: {
+          select: { id: true, email: true, smtpHost: true },
+        },
+      },
+      orderBy: { scheduledAt: 'desc' },
+      take: 50,
+    });
+
+    res.status(200).json({
+      success: true,
+      source: 'database',
+      count: dbResults.length,
+      data: dbResults,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * POST /api/emails/schedule
- * Validates, records batch & emails in PostgreSQL, and enqueues delayed BullMQ jobs.
+ * Validates, records batch & emails in PostgreSQL, indexes into ES, and enqueues delayed BullMQ jobs.
  */
 emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const validated = scheduleEmailSchema.parse(req.body);
-    const user = await getOrCreateDevUser();
+    const user = (req as any).user || (await getOrCreateDevUser());
 
     // 1. Resolve sender
     let sender = null;
@@ -140,7 +196,7 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
           body: validated.body,
           scheduledAt,
           status: 'scheduled',
-          bullmqJobId: null, // Will be set to email.id below
+          bullmqJobId: null,
         },
       });
 
@@ -167,6 +223,20 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
       await prisma.email.update({
         where: { id: email.id },
         data: { bullmqJobId: email.id },
+      });
+
+      // Index into Elasticsearch 8
+      void indexEmail({
+        id: email.id,
+        userId: user.id,
+        senderId: sender.id,
+        senderEmail: sender.email,
+        recipient: email.recipient,
+        subject: email.subject,
+        body: email.body,
+        status: email.status,
+        scheduledAt: email.scheduledAt,
+        createdAt: email.createdAt,
       });
 
       scheduledEmails.push({
@@ -201,9 +271,9 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
  * GET /api/emails/scheduled
  * Retrieves all emails in 'scheduled' or 'processing' states.
  */
-emailRouter.get('/scheduled', async (_req: Request, res: Response, next: NextFunction) => {
+emailRouter.get('/scheduled', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await getOrCreateDevUser();
+    const user = (req as any).user || (await getOrCreateDevUser());
 
     const emails = await prisma.email.findMany({
       where: {
@@ -244,9 +314,9 @@ emailRouter.get('/scheduled', async (_req: Request, res: Response, next: NextFun
  * GET /api/emails/sent
  * Retrieves all emails in 'sent' or 'failed' states.
  */
-emailRouter.get('/sent', async (_req: Request, res: Response, next: NextFunction) => {
+emailRouter.get('/sent', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = await getOrCreateDevUser();
+    const user = (req as any).user || (await getOrCreateDevUser());
 
     const emails = await prisma.email.findMany({
       where: {

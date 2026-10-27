@@ -1,16 +1,25 @@
 import React from 'react';
-import { Mail, Plus, ExternalLink, RefreshCw } from 'lucide-react';
+import { Mail, Plus, ExternalLink, RefreshCw, MessageSquare, Check, LogIn } from 'lucide-react';
 
 interface Props {
   onOpenCompose: () => void;
   onRefresh: () => void;
   loading: boolean;
+  currentUser?: {
+    email: string;
+    name?: string;
+    avatarUrl?: string;
+    hasGoogleAuth: boolean;
+  } | null;
+  slackConnected?: boolean;
 }
 
 export const Navbar: React.FC<Props> = ({
   onOpenCompose,
   onRefresh,
   loading,
+  currentUser,
+  slackConnected,
 }) => {
   return (
     <header className="border-b border-slate-800 bg-slate-900/80 backdrop-blur sticky top-0 z-30">
@@ -30,13 +39,35 @@ export const Navbar: React.FC<Props> = ({
               </span>
             </div>
             <p className="text-[11px] text-slate-400">
-              Persistent BullMQ & Redis Job Dashboard
+              Persistent BullMQ & Redis Job Engine
             </p>
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="flex items-center gap-3">
+        {/* Integrations & Actions */}
+        <div className="flex items-center gap-2 sm:gap-3">
+          {/* Slack Integration CTA */}
+          <a
+            href="/api/slack/connect"
+            title={slackConnected ? 'Slack connected' : 'Connect Slack channel'}
+            className={`hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium border transition ${
+              slackConnected
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700/60'
+            }`}
+          >
+            <MessageSquare className="w-3.5 h-3.5" />
+            {slackConnected ? (
+              <>
+                <Check className="w-3 h-3 text-emerald-400" />
+                Slack Linked
+              </>
+            ) : (
+              'Connect Slack'
+            )}
+          </a>
+
+          {/* Bull Board External Link */}
           <a
             href="http://localhost:4000/admin/queues"
             target="_blank"
@@ -47,6 +78,33 @@ export const Navbar: React.FC<Props> = ({
             Bull Board UI
           </a>
 
+          {/* User Auth Info / Google Login */}
+          {currentUser?.hasGoogleAuth ? (
+            <div className="flex items-center gap-2 pl-1 pr-2 py-1 rounded-xl bg-slate-800/80 border border-slate-700/60 text-xs text-slate-200">
+              {currentUser.avatarUrl ? (
+                <img
+                  src={currentUser.avatarUrl}
+                  alt={currentUser.name || 'User'}
+                  className="w-5 h-5 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-5 h-5 rounded-full bg-indigo-600 flex items-center justify-center text-[10px]">
+                  {currentUser.email[0]?.toUpperCase()}
+                </div>
+              )}
+              <span className="hidden lg:inline font-medium">{currentUser.name || currentUser.email}</span>
+            </div>
+          ) : (
+            <a
+              href="/api/auth/google"
+              className="hidden lg:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700/60 transition"
+            >
+              <LogIn className="w-3.5 h-3.5 text-indigo-400" />
+              Sign in with Google
+            </a>
+          )}
+
+          {/* Refresh Action */}
           <button
             onClick={onRefresh}
             disabled={loading}
@@ -56,12 +114,13 @@ export const Navbar: React.FC<Props> = ({
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
 
+          {/* Compose CTA */}
           <button
             onClick={onOpenCompose}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition transform hover:-translate-y-0.5"
+            className="inline-flex items-center gap-2 px-3.5 sm:px-4 py-2 rounded-xl text-xs sm:text-sm font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30 transition transform hover:-translate-y-0.5"
           >
             <Plus className="w-4 h-4" />
-            Compose New Email
+            <span>Compose</span>
           </button>
         </div>
       </div>

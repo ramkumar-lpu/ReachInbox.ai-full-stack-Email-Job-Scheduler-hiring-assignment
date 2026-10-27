@@ -7,6 +7,8 @@ import {
   fetchScheduledEmails,
   fetchSentEmails,
   fetchSenders,
+  fetchCurrentUser,
+  fetchSlackStatus,
 } from './api/client';
 import {
   Clock,
@@ -22,6 +24,13 @@ export const App: React.FC = () => {
   const [scheduledEmails, setScheduledEmails] = useState<EmailRecord[]>([]);
   const [sentEmails, setSentEmails] = useState<EmailRecord[]>([]);
   const [senders, setSenders] = useState<SenderRecord[]>([]);
+  const [currentUser, setCurrentUser] = useState<{
+    email: string;
+    name?: string;
+    avatarUrl?: string;
+    hasGoogleAuth: boolean;
+  } | null>(null);
+  const [slackConnected, setSlackConnected] = useState(false);
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -31,15 +40,21 @@ export const App: React.FC = () => {
   const loadData = useCallback(async () => {
     try {
       setError(null);
-      const [scheduledRes, sentRes, sendersRes] = await Promise.all([
+      const [scheduledRes, sentRes, sendersRes, userRes, slackRes] = await Promise.all([
         fetchScheduledEmails(),
         fetchSentEmails(),
         fetchSenders(),
+        fetchCurrentUser(),
+        fetchSlackStatus(),
       ]);
 
       setScheduledEmails(scheduledRes);
       setSentEmails(sentRes);
       setSenders(sendersRes);
+      if (userRes.authenticated && userRes.user) {
+        setCurrentUser(userRes.user);
+      }
+      setSlackConnected(slackRes.connected);
     } catch (err: unknown) {
       setError((err as Error).message || 'Failed to connect to backend API');
     } finally {
@@ -49,6 +64,17 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     loadData();
+
+    // Check for OAuth callbacks in URL params
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('auth') === 'success') {
+      setSuccessBanner('Successfully signed in with Google OAuth!');
+      window.history.replaceState({}, '', window.location.pathname);
+    } else if (params.get('slack') === 'connected') {
+      setSuccessBanner('Slack channel successfully linked for campaign notifications!');
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+
     // Auto-refresh every 5 seconds to show real-time transitions (scheduled -> processing -> sent)
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
@@ -69,6 +95,8 @@ export const App: React.FC = () => {
         onOpenCompose={() => setIsComposeOpen(true)}
         onRefresh={loadData}
         loading={loading}
+        currentUser={currentUser}
+        slackConnected={slackConnected}
       />
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">

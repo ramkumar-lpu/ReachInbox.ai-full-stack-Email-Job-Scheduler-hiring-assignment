@@ -84,6 +84,14 @@ const envSchema = z.object({
     .enum(['true', 'false'])
     .default('true')
     .transform((val) => val === 'true'),
+  FRONTEND_URL: z.string().default('http://localhost:3000'),
+  JWT_SECRET: z.string().default('reachinbox-dev-jwt-secret-replace-in-production'),
+  GOOGLE_CLIENT_ID: z.string().default(''),
+  GOOGLE_CLIENT_SECRET: z.string().default(''),
+  GOOGLE_CALLBACK_URL: z.string().default(''),
+  SLACK_CLIENT_ID: z.string().default(''),
+  SLACK_CLIENT_SECRET: z.string().default(''),
+  SLACK_CALLBACK_URL: z.string().default(''),
 });
 
 const parsed = envSchema.safeParse(process.env);
