@@ -1,0 +1,143 @@
+// =============================================================================
+// Prisma Database Schema for ReachInbox Email Scheduler
+// Database: PostgreSQL 16
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum EmailStatus {
+  scheduled
+  processing
+  sent
+  failed
+}
+
+// -----------------------------------------------------------------------------
+// Models
+// -----------------------------------------------------------------------------
+
+/// Represents an authenticated tenant/user of the ReachInbox scheduler platform.
+model User {
+  id              String           @id @default(uuid())
+  googleId        String?          @unique
+  email           String           @unique
+  name            String?
+  avatarUrl       String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  // Relations:
+  // Deleting a user cascades to all their data (tenant boundary cleanup).
+  senders         Sender[]
+  slackConnection SlackConnection?
+  emailBatches    EmailBatch[]
+  emails          Email[]
+
+  @@map("users")
+}
+
+/// Represents an outbound email sender identity configured with SMTP credentials.
+/// Sensitive credentials (smtpPassword) must never be returned in API responses.
+model Sender {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  email        String
+  smtpHost     String
+  smtpPort     Int
+  smtpUsername String
+  smtpPassword String
+  hourlyLimit  Int      @default(50)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Emails sent or scheduled by this sender identity.
+  // Foreign key uses Restrict on Email -> Sender to preserve audit history and prevent
+  // accidental deletion of active/historical sending accounts.
+  emails       Email[]
+
+  // Enforces unique sender email address per user tenant.
+  @@unique([userId, email])
+  @@index([userId])
+  @@map("senders")
+}
+
+/// Stores Slack OAuth connection and webhook/channel configuration per user.
+/// Sensitive tokens (accessToken) must never be logged or leaked.
+model SlackConnection {
+  id          String   @id @default(uuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamId      String
+  accessToken String
+  channelId   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("slack_connections")
+}
+
+/// Represents a bulk scheduling campaign / batch created by a user.
+model EmailBatch {
+  id              String   @id @default(uuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subject         String
+  body            String   @db.Text
+  startTime       DateTime
+  delaySeconds    Int      @default(0)
+  hourlyLimit     Int      @default(50)
+  totalRecipients Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Deleting an EmailBatch cascades to its individual email job records.
+  emails          Email[]
+
+  @@index([userId])
+  @@map("email_batches")
+}
+
+/// Represents an individual scheduled, processing, sent, or failed email job.
+model Email {
+  id           String      @id @default(uuid())
+  batchId      String
+  batch        EmailBatch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  userId       String
+  user         User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderId     String
+  sender       Sender      @relation(fields: [senderId], references: [id], onDelete: Restrict)
+  recipient    String
+  subject      String
+  body         String      @db.Text
+  scheduledAt  DateTime
+  sentAt       DateTime?
+  status       EmailStatus @default(scheduled)
+  attemptCount Int         @default(0)
+  error        String?     @db.Text
+  bullmqJobId  String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  // Constraints:
+  // Prevents sending duplicate emails to the same recipient in the same batch.
+  @@unique([batchId, recipient])
+
+  // Performance Indexes:
+  // High-performance index for worker queries filtering jobs by tenant, status, and scheduled time.
+  @@index([userId, status, scheduledAt])
+  @@index([senderId])
+  @@index([batchId])
+  @@map("emails")
+}

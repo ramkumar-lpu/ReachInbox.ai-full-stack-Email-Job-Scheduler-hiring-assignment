@@ -1,0 +1,81 @@
+services:
+  # =========================================================================
+  # PostgreSQL: Relational database for persistent email jobs & metadata
+  # =========================================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: reachinbox_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-reachinbox_scheduler}
+    ports:
+      # Bound to localhost only to prevent external network exposure
+      # Port is configurable via POSTGRES_PORT (defaults to 5432)
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-reachinbox_scheduler}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # =========================================================================
+  # Redis: In-memory store with AOF persistence for job queuing & scheduling
+  # =========================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: reachinbox_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      # Bound to localhost only
+      # Port is configurable via REDIS_PORT (defaults to 6379)
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # =========================================================================
+  # Elasticsearch 8: Full-text search and indexing for email history & logs
+  # NOTE: Single-node mode with security disabled is STRICTLY for local
+  # development simplicity. DO NOT expose port 9200 to public networks.
+  # For production, enable xpack.security and configure TLS/authentication.
+  # =========================================================================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: reachinbox_elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      # Bound to localhost only
+      # Port is configurable via ELASTICSEARCH_PORT (defaults to 9200)
+      - "127.0.0.1:${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 25s
+
+volumes:
+  postgres_data:
+    name: reachinbox_postgres_data
+  redis_data:
+    name: reachinbox_redis_data
+  elasticsearch_data:
+    name: reachinbox_elasticsearch_data
