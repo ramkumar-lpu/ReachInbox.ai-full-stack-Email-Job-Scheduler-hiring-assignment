@@ -5,7 +5,7 @@
 **Region:** AWS Asia Pacific Mumbai (`ap-south-1`)  
 **Network Gateway:** Caddy Reverse Proxy (Listening on ports 80 & 443 with automated Let's Encrypt / ZeroSSL HTTPS)  
 **Database:** Neon Serverless PostgreSQL over SSL (`DATABASE_URL`)  
-**Internal Services:** Express REST API, BullMQ Worker, Redis 7 (AOF), Elasticsearch 8.15.3 (Single-node, 512MB JVM heap)
+**Internal Services:** Express REST API, BullMQ Worker, Redis 7 (AOF + `noeviction`), Optional Elasticsearch 8.15.3 (Single-node, 512MB JVM heap)
 
 ---
 
@@ -16,9 +16,9 @@
 3. [Prerequisites & DNS Configuration](#3-prerequisites--dns-configuration)
 4. [AWS Security Group Configuration](#4-aws-security-group-configuration)
 5. [EC2 Server Provisioning & Hardening](#5-ec2-server-provisioning--hardening)
-6. [Repository Setup & Deploy Key](#6-repository-setup--deploy-key)
+6. [Repository Setup & Configuration](#6-repository-setup--configuration)
 7. [Environment Configuration (.env)](#7-environment-configuration-env)
-8. [Neon PostgreSQL Schema Migration & Seeding](#8-neon-postgresql-schema-migration--seeding)
+8. [Neon PostgreSQL Schema Deployment (Prisma Migrate Deploy)](#8-neon-postgresql-schema-deployment-prisma-migrate-deploy)
 9. [Launching the Production Stack](#9-launching-the-production-stack)
 10. [End-to-End Verification & Health Checks](#10-end-to-end-verification--health-checks)
 11. [OAuth 2.0 Credentials Setup (Google & Slack)](#11-oauth-20-credentials-setup-google--slack)
@@ -29,7 +29,7 @@
 
 ## 1. Architecture Overview & Network Isolation
 
-In production, all services run under Docker Compose on a single isolated internal bridge network (`internal-net`). **Caddy is the only service that publishes host ports (`80` and `443`).** 
+In production, all application services run under Docker Compose on a single isolated internal bridge network (`internal-net`). **Caddy is the only service that publishes host ports (`80` and `443`).** 
 
 ```
                                   INTERNET
@@ -64,7 +64,7 @@ In production, all services run under Docker Compose on a single isolated intern
   ║          ▼                        ▼                        ▼            ║
   ║  ┌──────────────┐         ┌──────────────┐         ┌──────────────┐     ║
   ║  │   Redis 7    │         │Elasticsearch8│         │ Caddy Data & │     ║
-  ║  │(AOF enabled) │         │ (512MB Heap) │         │ Config Vols  │     ║
+  ║  │ (noeviction) │         │ (Optional)   │         │ Config Vols  │     ║
   ║  └──────────────┘         └──────────────┘         └──────────────┘     ║
   ╚═══════════════════════════════════╤═════════════════════════════════════╝
                                       │
@@ -80,22 +80,24 @@ In production, all services run under Docker Compose on a single isolated intern
 - **No Internal Ports Exposed:** Ports `4000` (Express), `6379` (Redis), and `9200` (Elasticsearch) are not mapped to host interfaces and cannot be reached from outside the EC2 instance.
 - **Auto-TLS:** Caddy requests and renews Let's Encrypt / ZeroSSL certificates automatically via the ACME HTTP-01 challenge on port 80.
 - **Database Offloading:** By hosting PostgreSQL on Neon, database memory and disk I/O are offloaded from the `t3.small` instance.
+- **Redis Queue Safety:** Redis uses `--maxmemory-policy noeviction` so BullMQ queued jobs and locks are never discarded under memory pressure.
 
 ---
 
 ## 2. Resource Sizing & Memory Strategy (2 GiB RAM)
 
-The EC2 `t3.small` instance provides 2.0 GiB (2048 MB) of physical RAM. To prevent out-of-memory (OOM) killer terminations:
+The EC2 `t3.small` instance provides 2.0 GiB (2048 MB) of physical RAM. To guarantee stability:
 
-| Service / Component | Memory Allocation | Optimization Applied |
+| Service / Component | Memory Limit / Allocation | Optimization Applied |
 | :--- | :--- | :--- |
-| **Elasticsearch 8** | ~512 MB – 650 MB | `ES_JAVA_OPTS=-Xms512m -Xmx512m`, single-node, xpack security disabled |
-| **Backend Express API** | ~90 MB – 140 MB | Node.js 22 Alpine, production build, no dev dependencies |
-| **BullMQ Worker** | ~90 MB – 140 MB | Standalone Node.js 22 Alpine process, concurrency capped at 5 |
-| **Redis 7** | ~40 MB – 60 MB | Alpine image, AOF persistence, small key footprint |
-| **Caddy Web Server** | ~25 MB – 40 MB | Go binary, static file serving, reverse proxy |
+| **Backend Express API** | Limit: 350 MB / Reserve: 100 MB | Node.js 22 Alpine, production build, non-root user `node` |
+| **BullMQ Worker** | Limit: 350 MB / Reserve: 100 MB | Standalone Node.js 22 Alpine process, concurrency capped at 5 |
+| **Redis 7** | Limit: 200 MB / Reserve: 50 MB | Alpine image, AOF persistence, `--maxmemory 150mb`, `noeviction` |
+| **Caddy Web Server** | Limit: 100 MB / Reserve: 30 MB | Go binary, static file serving, reverse proxy |
+| **Elasticsearch 8 (Optional)** | Limit: 768 MB / Reserve: 512 MB | Disabled by default. Enabled only via `--profile search` |
 | **Ubuntu OS & Daemons** | ~250 MB – 300 MB | Minimal Ubuntu LTS installation, systemd |
-| **Total Resident Memory**| **~1,000 MB – 1,350 MB** | Well within 2,048 MB threshold (~65% utilization) |
+| **Total Memory (without ES)** | **~600 MB – 900 MB** | Lightweight (~40% RAM utilization) |
+| **Total Memory (with ES)** | **~1,400 MB – 1,700 MB** | Fits safely within 2 GiB threshold |
 | **Swap Space (Safety Net)** | **2,048 MB (2 GB)** | Prevents OOM kills during Docker builds or load spikes |
 
 ---
@@ -103,18 +105,18 @@ The EC2 `t3.small` instance provides 2.0 GiB (2048 MB) of physical RAM. To preve
 ## 3. Prerequisites & DNS Configuration
 
 ### 3.1 DNS A Record
-In your DNS provider (e.g., Cloudflare, Route 53, Namecheap, GoDaddy):
+In your DNS provider (e.g., Cloudflare, Route 53, Namecheap):
 1. Create an **A Record**:
    - **Host / Name:** `scheduler` (or `scheduler.ramkumar.app`)
    - **Type:** `A`
    - **Value / Points to:** `<YOUR_EC2_ELASTIC_IP>`
-   - **TTL:** `300` seconds (5 minutes for fast propagation)
+   - **TTL:** `300` seconds (5 minutes)
 2. *Important (if using Cloudflare):* Set Proxy status to **DNS Only** (Grey Cloud) during initial setup so Caddy can solve the ACME HTTP-01 challenge directly.
 
 ### 3.2 Neon PostgreSQL Database
 1. Log in to [Neon Console](https://console.neon.tech/).
 2. Create or select a project in `ap-south-1` (Mumbai) or the closest AWS region.
-3. Copy the pooled or direct connection string:
+3. Copy the pooled or direct connection string (ensure `?sslmode=require` is present):
    ```
    postgresql://neondb_owner:YOUR_SECRET_PASSWORD@ep-sample-pool.ap-south-1.aws.neon.tech/neondb?sslmode=require
    ```
@@ -123,7 +125,7 @@ In your DNS provider (e.g., Cloudflare, Route 53, Namecheap, GoDaddy):
 
 ## 4. AWS Security Group Configuration
 
-In the AWS EC2 Management Console, locate your instance's Security Group and configure the following rules:
+In the AWS EC2 Management Console, configure the Security Group:
 
 ### Inbound Rules (Strictly Minimal)
 
@@ -136,14 +138,11 @@ In the AWS EC2 Management Console, locate your instance's Security Group and con
 > [!CAUTION]
 > **Never open ports 4000, 6379, 9200, or 5432 to `0.0.0.0/0`.** All inter-service traffic flows exclusively over Docker's internal bridge network.
 
-### Outbound Rules
-- Default: **All Traffic** (`0.0.0.0/0`) to allow outbound HTTPS calls to Neon PostgreSQL, SMTP relays (Ethereal / Gmail / SendGrid), Google OAuth, and Slack Webhooks.
-
 ---
 
 ## 5. EC2 Server Provisioning & Hardening
 
-SSH into your newly launched Ubuntu EC2 instance:
+SSH into your Ubuntu EC2 instance:
 
 ```bash
 ssh -i /path/to/your-key.pem ubuntu@<YOUR_EC2_ELASTIC_IP>
@@ -174,8 +173,7 @@ sudo sysctl vm.swappiness=10
 echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
 ```
 
-### 5.3 Configure Virtual Memory for Elasticsearch
-Elasticsearch requires `vm.max_map_count` to be at least `262144`:
+### 5.3 Configure Virtual Memory for Elasticsearch (if used)
 ```bash
 sudo sysctl -w vm.max_map_count=262144
 echo 'vm.max_map_count=262144' | sudo tee -a /etc/sysctl.conf
@@ -207,17 +205,11 @@ sudo usermod -aG docker ubuntu
 newgrp docker
 ```
 
-Verify installation:
-```bash
-docker --version
-docker compose version
-```
-
 ---
 
-## 6. Repository Setup & Deploy Key
+## 6. Repository Setup & Configuration
 
-### 6.1 Clone the Project Repository
+Clone the project repository:
 ```bash
 cd /home/ubuntu
 git clone https://github.com/ramkumar-lpu/ReachInbox.ai-full-stack-Email-Job-Scheduler-hiring-assignment.git scheduler
@@ -236,24 +228,34 @@ chmod 600 .env
 nano .env
 ```
 
-### Required Configuration in `.env`
+### Required Variables in `.env`:
 ```dotenv
-# Node Environment & Server Port
 NODE_ENV=production
 PORT=4000
 
-# Neon PostgreSQL Database Connection (Must include ?sslmode=require)
-DATABASE_URL="postgresql://neondb_owner:YOUR_PASSWORD@ep-sample-pool.ap-south-1.aws.neon.tech/neondb?sslmode=require"
+# Neon PostgreSQL connection string (must include ?sslmode=require)
+DATABASE_URL="postgresql://neondb_owner:YOUR_SECRET_PASSWORD@ep-sample-pool.ap-south-1.aws.neon.tech/neondb?sslmode=require"
 
 # Docker Internal Service Connections
 REDIS_URL=redis://redis:6379
+
+# Elasticsearch (default: false for lightweight t3.small operation)
+ELASTICSEARCH_ENABLED=false
 ELASTICSEARCH_URL=http://elasticsearch:9200
 
-# Application Public Origin
+# Public Origin
 FRONTEND_URL=https://scheduler.ramkumar.app
 
 # Secure 64-character JWT Secret (Generate via: openssl rand -hex 32)
 JWT_SECRET=paste_generated_hex_secret_here
+
+# Protected Bull Board Admin Credentials (Required in production)
+ADMIN_ENABLED=true
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=paste_strong_admin_password_here
+
+# Guard: strictly false in production (prevents dev fallback)
+ALLOW_DEV_AUTH=false
 
 # Google OAuth 2.0 Credentials
 GOOGLE_CLIENT_ID=your_google_client_id.apps.googleusercontent.com
@@ -265,64 +267,53 @@ SLACK_CLIENT_ID=your_slack_client_id
 SLACK_CLIENT_SECRET=your_slack_client_secret
 SLACK_CALLBACK_URL=https://scheduler.ramkumar.app/api/slack/callback
 
-# Background Worker Performance Tuning
+# Worker Configuration
 WORKER_CONCURRENCY=5
 MIN_SEND_DELAY_MS=200
 EMBEDDED_WORKER=false
 ```
 
-Generate a random JWT secret:
+Generate a random 64-character hex key for `JWT_SECRET`:
 ```bash
 openssl rand -hex 32
 ```
 
 ---
 
-## 8. Neon PostgreSQL Schema Migration & Seeding
+## 8. Neon PostgreSQL Schema Deployment (Prisma Migrate Deploy)
 
-Before launching the full container stack, apply Prisma migrations to your Neon database and seed development sender records.
+> [!IMPORTANT]
+> In production, **always use `prisma migrate deploy`**. Never run `prisma migrate dev` against production databases.
 
-### Option A: Direct Migration via Node.js on EC2 (Fastest)
+### Running Migrations via Transient Docker Container:
 ```bash
-# Install Node.js 22 LTS on the host if not already present
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-
-# Install dependencies in backend directory
-cd /home/ubuntu/scheduler/backend
-npm ci
-
-# Apply schema migrations to Neon
-DATABASE_URL="postgresql://neondb_owner:YOUR_PASSWORD@ep-sample-pool.ap-south-1.aws.neon.tech/neondb?sslmode=require" npx prisma migrate deploy
-
-# Run the idempotent seed script
-DATABASE_URL="postgresql://neondb_owner:YOUR_PASSWORD@ep-sample-pool.ap-south-1.aws.neon.tech/neondb?sslmode=require" npm run db:seed
-
-# Verify database state
-DATABASE_URL="postgresql://neondb_owner:YOUR_PASSWORD@ep-sample-pool.ap-south-1.aws.neon.tech/neondb?sslmode=require" npm run db:verify
-
 cd /home/ubuntu/scheduler
-```
 
-### Option B: Migration via Docker (Without Node.js on Host)
-If you prefer not to install Node.js on the host OS:
-```bash
-# Build backend image first
+# 1. Build backend image
 docker compose -f docker-compose.prod.yml build backend
 
-# Run migration inside a transient container
+# 2. Deploy migrations to Neon
 docker compose -f docker-compose.prod.yml run --rm backend npx prisma migrate deploy
 ```
+
+*(Optional: If you need to create production senders, do so through the application API or seed script targeting Neon).*
 
 ---
 
 ## 9. Launching the Production Stack
 
-Start all production services in detached mode:
-
+### Mode A: Standard Lightweight Stack (Recommended for `t3.small`)
+Runs Caddy, Backend API, BullMQ Worker, and Redis 7 (Elasticsearch disabled, saving ~600MB RAM):
 ```bash
 cd /home/ubuntu/scheduler
 docker compose -f docker-compose.prod.yml up -d --build
+```
+
+### Mode B: Full Stack with Elasticsearch
+Runs all services plus Elasticsearch 8.15.3 (Ensure `ELASTICSEARCH_ENABLED=true` in `.env`):
+```bash
+cd /home/ubuntu/scheduler
+docker compose -f docker-compose.prod.yml --profile search up -d --build
 ```
 
 ### 9.1 Verify Container Status
@@ -332,26 +323,25 @@ docker compose -f docker-compose.prod.yml ps
 
 Expected healthy output:
 ```
-NAME                    IMAGE                               COMMAND                  SERVICE         STATUS                   PORTS
-reachinbox_backend_prod reachinbox-scheduler-backend        "node dist/server.js"    backend         running (healthy)        
-reachinbox_caddy_prod   reachinbox-scheduler-caddy          "caddy run --config …"   caddy           running                  0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
-reachinbox_es_prod      elasticsearch:8.15.3                "/bin/tini -- /usr/l…"   elasticsearch   running (healthy)        
-reachinbox_redis_prod   redis:7-alpine                      "redis-server --appe…"   redis           running (healthy)        
-reachinbox_worker_prod  reachinbox-scheduler-backend        "node dist/worker.js"    worker          running                  
+NAME                    IMAGE                         COMMAND                  SERVICE         STATUS                   PORTS
+reachinbox_backend_prod reachinbox-scheduler-backend  "node dist/server.js"    backend         running                  
+reachinbox_caddy_prod   reachinbox-scheduler-caddy    "caddy run --config …"   caddy           running                  0.0.0.0:80->80/tcp, 0.0.0.0:443->443/tcp
+reachinbox_redis_prod   redis:7-alpine                "redis-server --appe…"   redis           running (healthy)        
+reachinbox_worker_prod  reachinbox-scheduler-backend  "node dist/worker.js"    worker          running                  
 ```
 
-### 9.2 Inspect Live Logs
+### 9.2 Inspect Logs
 ```bash
-# Follow all container logs
+# Follow live logs for all services
 docker compose -f docker-compose.prod.yml logs -f
 
-# Follow Caddy logs to confirm Let's Encrypt certificate issuance
+# Check Caddy SSL certificate acquisition
 docker compose -f docker-compose.prod.yml logs -f caddy
 
-# Follow Express API startup and reconciliation
+# Check Express API startup
 docker compose -f docker-compose.prod.yml logs -f backend
 
-# Follow BullMQ Worker email consumer
+# Check BullMQ Worker
 docker compose -f docker-compose.prod.yml logs -f worker
 ```
 
@@ -359,45 +349,63 @@ docker compose -f docker-compose.prod.yml logs -f worker
 
 ## 10. End-to-End Verification & Health Checks
 
-Execute these non-destructive verification steps on the host or from your workstation:
-
-### 10.1 API Health Probe
+### 10.1 Liveness & Readiness Probes
 ```bash
+# Liveness Probe (verifies HTTP event loop is responding)
+curl -i https://scheduler.ramkumar.app/health/live
+
+# Readiness Probe (verifies PostgreSQL & Redis connectivity)
+curl -i https://scheduler.ramkumar.app/health/ready
+
+# Primary Probe (verifies overall system health)
 curl -i https://scheduler.ramkumar.app/health
 ```
-**Expected Response (`200 OK`):**
+
+**Expected Readiness Response (`200 OK`):**
 ```json
 {
-  "status": "ok",
-  "uptime": 12.34,
+  "status": "ready",
+  "check": "readiness",
+  "service": "reachinbox-scheduler-backend",
+  "environment": "production",
   "timestamp": "2026-10-27T12:00:00.000Z",
-  "environment": "production"
+  "uptimeSeconds": 45,
+  "dependencies": {
+    "postgres": { "status": "connected", "latencyMs": 14 },
+    "redis": { "status": "connected", "latencyMs": 2 },
+    "elasticsearch": { "status": "disabled" }
+  }
 }
 ```
 
-### 10.2 Scheduled and Sent Email Endpoints
+### 10.2 Production Authentication Verification
+Verify that unauthenticated requests receive HTTP 401 and cannot bypass authentication:
 ```bash
+# Must return HTTP 401 Unauthorized
 curl -i https://scheduler.ramkumar.app/api/emails/scheduled
-curl -i https://scheduler.ramkumar.app/api/emails/sent
-```
-Both return `200 OK` with JSON payloads containing email records.
 
-### 10.3 Elasticsearch Full-Text Search
+# Must return HTTP 401 Unauthorized
+curl -i -X POST https://scheduler.ramkumar.app/api/emails/schedule \
+  -H "Content-Type: application/json" \
+  -d '{"subject":"Test","body":"Test","recipients":["test@example.com"]}'
+```
+
+### 10.3 Bull Board Admin Access Verification
 ```bash
-curl -i "https://scheduler.ramkumar.app/api/emails/search?q=welcome"
+# Without credentials -> HTTP 401 Unauthorized
+curl -i https://scheduler.ramkumar.app/admin/queues
+
+# With configured credentials -> HTTP 200 OK
+curl -i -u admin:YOUR_ADMIN_PASSWORD https://scheduler.ramkumar.app/admin/queues
 ```
-Returns matching email records indexed in Elasticsearch 8.
+In your browser, visit `https://scheduler.ramkumar.app/admin/queues` and enter your configured `ADMIN_USERNAME` and `ADMIN_PASSWORD` in the browser prompt.
 
-### 10.4 Web Dashboard & SPA Fallback
-Open `https://scheduler.ramkumar.app` in any modern browser:
-- The React dashboard loads with clean Tailwind styling.
-- Metrics cards reflect Scheduled, Processing, Sent, and Failed counts.
-- Search bar queries Elasticsearch in real-time.
-- Navigating directly to subpaths or refreshing the page works seamlessly due to Caddy's `try_files {path} /index.html` fallback.
-
-### 10.5 Bull Board Monitoring Interface
-Open `https://scheduler.ramkumar.app/admin/queues` in your browser:
-- Live BullMQ `email-queue` dashboard displays active, completed, failed, and delayed jobs.
+### 10.4 Web Dashboard Verification
+Open `https://scheduler.ramkumar.app` in your browser:
+- The React SPA loads over HTTPS.
+- Direct navigation to any URL or page refresh works seamlessly due to Caddy SPA fallback (`try_files {path} /index.html`).
+- Google OAuth login works and sets a secure `token` cookie.
+- Search works with PostgreSQL fallback (or Elasticsearch if enabled).
 
 ---
 
@@ -406,112 +414,93 @@ Open `https://scheduler.ramkumar.app/admin/queues` in your browser:
 ### 11.1 Google Cloud Console
 1. Visit [Google Cloud Console Credentials](https://console.cloud.google.com/apis/credentials).
 2. Edit your **OAuth 2.0 Client ID** (Web application):
-   - **Authorized JavaScript origins:**
-     - `https://scheduler.ramkumar.app`
-   - **Authorized redirect URIs:**
-     - `https://scheduler.ramkumar.app/api/auth/google/callback`
-3. Save changes. Google OAuth sign-in will now authenticate users and issue secure session cookies.
+   - **Authorized JavaScript origins:** `https://scheduler.ramkumar.app`
+   - **Authorized redirect URIs:** `https://scheduler.ramkumar.app/api/auth/google/callback`
+3. Save changes.
 
 ### 11.2 Slack App Console
 1. Visit [Slack API Apps](https://api.slack.com/apps).
 2. Under **OAuth & Permissions**:
-   - **Redirect URLs:**
-     - `https://scheduler.ramkumar.app/api/slack/callback`
-   - **Bot Token Scopes:**
-     - `chat:write`
-     - `channels:read`
-3. Save changes. Clicking "Connect Slack" on the dashboard will authorize your workspace and dispatch delivery notifications.
+   - **Redirect URLs:** `https://scheduler.ramkumar.app/api/slack/callback`
+   - **Bot Token Scopes:** `incoming-webhook`, `chat:write`
+3. Save changes.
 
 ---
 
 ## 12. Ongoing Maintenance, Updates & Rollbacks
 
-### 12.1 Applying Code Updates (Zero-Downtime Rebuild)
-When new commits are pushed to the GitHub repository:
-
+### 12.1 Deploying Code Updates (Zero Downtime)
 ```bash
 cd /home/ubuntu/scheduler
 
-# Pull latest code
+# 1. Pull latest code
 git pull origin main
 
-# Re-run migrations if Prisma schema changed
-cd backend && DATABASE_URL="<NEON_URL>" npx prisma migrate deploy && cd ..
+# 2. Run new migrations if schema changed
+docker compose -f docker-compose.prod.yml run --rm backend npx prisma migrate deploy
 
-# Rebuild and restart containers in place
+# 3. Rebuild and restart updated containers
 docker compose -f docker-compose.prod.yml up -d --build
 
-# Prune old dangling Docker images to free disk space
+# 4. Remove dangling Docker images to free disk space
 docker image prune -f
 ```
 
 ### 12.2 Instant Rollback Procedure
-If an issue arises after a deployment:
-
+If a deployment needs to be reverted:
 ```bash
 cd /home/ubuntu/scheduler
 
-# Identify the previous stable commit hash
+# Check recent commit history
 git log --oneline -n 5
 
-# Revert to stable commit
-git checkout <COMMIT_HASH>
+# Checkout the previous known-good commit
+git checkout <PREVIOUS_COMMIT_HASH>
 
 # Rebuild and restart containers
 docker compose -f docker-compose.prod.yml up -d --build
 ```
 
-### 12.3 Managing Services
+### 12.3 Service Control Commands
 ```bash
-# Stop all services cleanly
-docker compose -f docker-compose.prod.yml stop
+# View resource consumption (CPU & RAM)
+docker stats --no-stream
 
-# Restart a specific service (e.g., worker)
+# Restart worker
 docker compose -f docker-compose.prod.yml restart worker
 
-# View memory and CPU utilization of containers
-docker stats --no-stream
+# Restart backend API
+docker compose -f docker-compose.prod.yml restart backend
+
+# Stop entire stack cleanly
+docker compose -f docker-compose.prod.yml stop
 ```
 
 ---
 
 ## 13. Troubleshooting & Diagnostics
 
-### Issue 1: Caddy Fails to Obtain TLS Certificate
-- **Symptom:** Browser shows `SSL_ERROR_INTERNAL_ERROR_ALERT` or connection refused on 443.
-- **Diagnostic:** Check Caddy logs:
+### Issue 1: Bull Board Returns 503 Service Unavailable
+- **Cause:** In production, `ADMIN_PASSWORD` is either missing or shorter than 8 characters in `.env`.
+- **Fix:** Set a strong password in `.env` (`ADMIN_PASSWORD=...`) and restart backend:
   ```bash
-  docker compose -f docker-compose.prod.yml logs caddy | grep -i "certificate"
+  docker compose -f docker-compose.prod.yml up -d backend
   ```
+
+### Issue 2: Health Check Returns 503 Unhealthy
+- **Cause:** PostgreSQL or Redis is unreachable.
+- **Diagnostic:** Check `/health/ready` response payload to identify which dependency failed.
+- **Fixes:**
+  - If `postgres` is disconnected: verify Neon connection string and network reachability. Ensure `?sslmode=require` is present.
+  - If `redis` is disconnected: check `docker compose -f docker-compose.prod.yml logs redis`.
+
+### Issue 3: Caddy Fails to Obtain TLS Certificate
+- **Diagnostic:** Check Caddy logs: `docker compose -f docker-compose.prod.yml logs caddy`.
 - **Causes & Fixes:**
-  1. *DNS not propagated:* Run `dig +short scheduler.ramkumar.app` or `nslookup scheduler.ramkumar.app`. Verify it resolves to your Elastic IP.
-  2. *Port 80 blocked:* Check AWS Security Group. Port 80 must be open to `0.0.0.0/0` for the ACME challenge.
-  3. *Cloudflare Proxy enabled:* If using Cloudflare, turn proxy off (Grey Cloud) so Let's Encrypt can reach Caddy directly.
+  1. *DNS not propagated:* Run `dig +short scheduler.ramkumar.app` and confirm it returns your Elastic IP.
+  2. *Port 80 blocked:* Ensure AWS Security Group permits inbound HTTP (port 80) from `0.0.0.0/0`.
+  3. *Cloudflare Proxy:* Temporarily set Cloudflare proxy to "DNS Only" (Grey Cloud) during initial certificate issuance.
 
-### Issue 2: Elasticsearch Fails on Startup
-- **Symptom:** `reachinbox_es_prod` exits or is continuously restarting.
-- **Diagnostic:**
-  ```bash
-  docker compose -f docker-compose.prod.yml logs elasticsearch
-  ```
-- **Fix:** If the log shows `max virtual memory areas vm.max_map_count [65530] is too low`, apply the kernel setting:
-  ```bash
-  sudo sysctl -w vm.max_map_count=262144
-  docker compose -f docker-compose.prod.yml restart elasticsearch
-  ```
-
-### Issue 3: Container OOM Kill on `t3.small`
-- **Symptom:** Container abruptly exits with exit code `137`.
-- **Diagnostic:** Check system dmesg:
-  ```bash
-  sudo dmesg -T | grep -i oom
-  ```
-- **Fix:** Verify swapfile is enabled:
-  ```bash
-  free -m
-  ```
-  If `Swap` shows `0`, recreate the 2 GB swapfile following Section 5.2. Ensure Elasticsearch JVM heap remains locked at `512m` (`-Xms512m -Xmx512m`).
-
-### Issue 4: Neon Database SSL Handshake Failure
-- **Symptom:** Express fails to start with `PrismaClientInitializationError: Error in Prisma Client: Can't reach database server`.
-- **Fix:** Ensure the connection string ends with `?sslmode=require` and the password in `.env` is properly URL-encoded if it contains special characters like `@`, `!`, or `#`.
+### Issue 4: Container Out of Memory (OOM) Termination
+- **Diagnostic:** Check kernel logs: `sudo dmesg -T | grep -i oom`.
+- **Fix:** Verify 2GB swapfile is active (`free -m`). If Elasticsearch is enabled and causing memory pressure, disable it (`ELASTICSEARCH_ENABLED=false` in `.env`) and run without `--profile search`.

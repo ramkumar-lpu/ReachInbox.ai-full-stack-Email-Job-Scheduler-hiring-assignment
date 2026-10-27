@@ -28,11 +28,14 @@ export function verifyToken(token: string): AuthTokenPayload | null {
 /**
  * Authentication Middleware:
  * Inspects `token` HTTP cookie or `Authorization: Bearer <token>` header.
- * Falls back to dev user in development mode so API remains demonstrable without mandatory login.
+ * 
+ * Security policies:
+ * - Production: Strictly requires a valid token; unauthenticated requests receive HTTP 401.
+ * - Development: Only permits fallback to `dev@reachinbox.test` if ALLOW_DEV_AUTH is explicitly true.
  */
 export async function authenticateUser(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction
 ): Promise<void> {
   let token = req.cookies?.token;
@@ -53,18 +56,64 @@ export async function authenticateUser(
     }
   }
 
-  // Fallback: Ensure default development user exists
-  const devUser = await prisma.user.upsert({
-    where: { email: 'dev@reachinbox.test' },
-    update: {},
-    create: {
-      email: 'dev@reachinbox.test',
-      name: 'ReachInbox Development User',
-      avatarUrl: 'https://avatar.iran.liara.run/public/boy',
-    },
-  });
+  // In production, strictly reject with 401
+  if (env.NODE_ENV === 'production') {
+    res.status(401).json({
+      success: false,
+      error: 'Unauthorized: Authentication required. Please log in.',
+    });
+    return;
+  }
 
-  (req as any).user = devUser;
+  // In development/test mode: only fall back if explicitly permitted
+  if (env.ALLOW_DEV_AUTH) {
+    const devUser = await prisma.user.upsert({
+      where: { email: 'dev@reachinbox.test' },
+      update: {},
+      create: {
+        email: 'dev@reachinbox.test',
+        name: 'ReachInbox Development User',
+        avatarUrl: 'https://avatar.iran.liara.run/public/boy',
+      },
+    });
+
+    (req as any).user = devUser;
+    return next();
+  }
+
+  // Otherwise, reject unauthenticated request
+  res.status(401).json({
+    success: false,
+    error: 'Unauthorized: Authentication required.',
+  });
+}
+
+/**
+ * Optional Authentication Middleware:
+ * Attaches user to `req.user` if valid token exists, but does not block if unauthenticated.
+ */
+export async function optionalAuthenticate(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): Promise<void> {
+  let token = req.cookies?.token;
+  if (!token && req.headers.authorization?.startsWith('Bearer ')) {
+    token = req.headers.authorization.split(' ')[1];
+  }
+
+  if (token) {
+    const payload = verifyToken(token);
+    if (payload) {
+      const user = await prisma.user.findUnique({
+        where: { id: payload.userId },
+      });
+      if (user) {
+        (req as any).user = user;
+      }
+    }
+  }
+
   next();
 }
 

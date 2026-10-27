@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../db/client';
 import { emailQueue } from '../queues/emailQueue';
 import { indexEmail, searchEmailsInEs } from '../services/searchService';
+import { env } from '../config/env';
 
 export const emailRouter = Router();
 
@@ -22,18 +23,36 @@ const scheduleEmailSchema = z.object({
 });
 
 /**
- * Helper to ensure a development tenant user exists
+ * Helper to resolve the authenticated user.
+ * In production:
+ * - Strictly requires req.user (attached by authenticateUser middleware).
+ * - Never creates or falls back to dev@reachinbox.test.
+ * In development:
+ * - Falls back to dev user only when ALLOW_DEV_AUTH is explicitly true.
  */
-async function getOrCreateDevUser() {
-  return prisma.user.upsert({
-    where: { email: 'dev@reachinbox.test' },
-    update: {},
-    create: {
-      email: 'dev@reachinbox.test',
-      name: 'ReachInbox Development User',
-      avatarUrl: 'https://avatar.iran.liara.run/public/boy',
-    },
-  });
+async function resolveUser(req: Request): Promise<any | null> {
+  const user = (req as any).user;
+  if (user) return user;
+
+  // In production, never bypass authentication
+  if (env.NODE_ENV === 'production') {
+    return null;
+  }
+
+  // In non-production, only fall back if explicitly permitted
+  if (env.ALLOW_DEV_AUTH) {
+    return prisma.user.upsert({
+      where: { email: 'dev@reachinbox.test' },
+      update: {},
+      create: {
+        email: 'dev@reachinbox.test',
+        name: 'ReachInbox Development User',
+        avatarUrl: 'https://avatar.iran.liara.run/public/boy',
+      },
+    });
+  }
+
+  return null;
 }
 
 /**
@@ -42,7 +61,15 @@ async function getOrCreateDevUser() {
  */
 emailRouter.get('/senders', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = (req as any).user || (await getOrCreateDevUser());
+    const user = await resolveUser(req);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Authentication required.',
+      });
+      return;
+    }
+
     const senders = await prisma.sender.findMany({
       where: { userId: user.id },
       select: {
@@ -71,11 +98,23 @@ emailRouter.get('/senders', async (req: Request, res: Response, next: NextFuncti
  */
 emailRouter.get('/search', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = (req as any).user || (await getOrCreateDevUser());
+    const user = await resolveUser(req);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Authentication required.',
+      });
+      return;
+    }
+
     const query = (req.query.q as string) || '';
     const status = req.query.status as string | undefined;
 
-    const esResults = await searchEmailsInEs(user.id, query, status);
+    // Search Elasticsearch if enabled
+    let esResults: any[] = [];
+    if (env.ELASTICSEARCH_ENABLED) {
+      esResults = await searchEmailsInEs(user.id, query, status);
+    }
 
     if (esResults && esResults.length > 0) {
       res.status(200).json({
@@ -87,7 +126,7 @@ emailRouter.get('/search', async (req: Request, res: Response, next: NextFunctio
       return;
     }
 
-    // Fallback to PostgreSQL relational search if ES has no hits
+    // Fallback to PostgreSQL relational search if ES is disabled or yields no results
     const dbResults = await prisma.email.findMany({
       where: {
         userId: user.id,
@@ -122,12 +161,20 @@ emailRouter.get('/search', async (req: Request, res: Response, next: NextFunctio
 
 /**
  * POST /api/emails/schedule
- * Validates, records batch & emails in PostgreSQL, indexes into ES, and enqueues delayed BullMQ jobs.
+ * Validates, records batch & emails in PostgreSQL, conditionally indexes into ES, and enqueues delayed BullMQ jobs.
  */
 emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const user = await resolveUser(req);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Authentication required.',
+      });
+      return;
+    }
+
     const validated = scheduleEmailSchema.parse(req.body);
-    const user = (req as any).user || (await getOrCreateDevUser());
 
     // 1. Resolve sender
     let sender = null;
@@ -149,7 +196,7 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
       if (!sender) {
         res.status(400).json({
           success: false,
-          error: 'No sender configured. Please run database seed or create a sender first.',
+          error: 'No sender configured. Please create a sender first.',
         });
         return;
       }
@@ -225,19 +272,23 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
         data: { bullmqJobId: email.id },
       });
 
-      // Index into Elasticsearch 8
-      void indexEmail({
-        id: email.id,
-        userId: user.id,
-        senderId: sender.id,
-        senderEmail: sender.email,
-        recipient: email.recipient,
-        subject: email.subject,
-        body: email.body,
-        status: email.status,
-        scheduledAt: email.scheduledAt,
-        createdAt: email.createdAt,
-      });
+      // Index into Elasticsearch if enabled (non-blocking, never fails scheduling)
+      if (env.ELASTICSEARCH_ENABLED) {
+        void indexEmail({
+          id: email.id,
+          userId: user.id,
+          senderId: sender.id,
+          senderEmail: sender.email,
+          recipient: email.recipient,
+          subject: email.subject,
+          body: email.body,
+          status: email.status,
+          scheduledAt: email.scheduledAt,
+          createdAt: email.createdAt,
+        }).catch((err) => {
+          console.warn(`⚠️ [ES Indexing Non-fatal Error] Email ${email.id}:`, (err as Error).message);
+        });
+      }
 
       scheduledEmails.push({
         id: email.id,
@@ -273,7 +324,14 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
  */
 emailRouter.get('/scheduled', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = (req as any).user || (await getOrCreateDevUser());
+    const user = await resolveUser(req);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Authentication required.',
+      });
+      return;
+    }
 
     const emails = await prisma.email.findMany({
       where: {
@@ -316,7 +374,14 @@ emailRouter.get('/scheduled', async (req: Request, res: Response, next: NextFunc
  */
 emailRouter.get('/sent', async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const user = (req as any).user || (await getOrCreateDevUser());
+    const user = await resolveUser(req);
+    if (!user) {
+      res.status(401).json({
+        success: false,
+        error: 'Unauthorized: Authentication required.',
+      });
+      return;
+    }
 
     const emails = await prisma.email.findMany({
       where: {

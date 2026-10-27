@@ -28,9 +28,14 @@ scheduler.ramkumar.app {
         }
     }
 
-    # Public Health Probe
-    handle /health {
-        reverse_proxy backend:4000
+    # Public Health Probes (/health, /health/live, /health/ready)
+    handle /health* {
+        reverse_proxy backend:4000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
     }
 
     # Static SPA serving with client-side routing fallback to index.html

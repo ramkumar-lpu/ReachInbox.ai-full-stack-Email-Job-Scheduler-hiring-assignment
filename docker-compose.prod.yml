@@ -7,13 +7,14 @@
 services:
   # ---------------------------------------------------------------------------
   # Caddy: Public entrypoint with automated TLS and React SPA static serving
+  # (Only service exposing public ports 80 and 443)
   # ---------------------------------------------------------------------------
   caddy:
     build:
       context: .
       dockerfile: deploy/Dockerfile.caddy
     container_name: reachinbox_caddy_prod
-    restart: always
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
@@ -24,24 +25,40 @@ services:
     volumes:
       - caddy_data:/data
       - caddy_config:/config
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+        reservations:
+          memory: 30M
 
   # ---------------------------------------------------------------------------
-  # Backend API Server: Express.js REST API & Bull Board Dashboard
+  # Backend API Server: Express.js REST API & Protected Bull Board Dashboard
   # ---------------------------------------------------------------------------
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     container_name: reachinbox_backend_prod
-    restart: always
+    restart: unless-stopped
     environment:
       - NODE_ENV=production
       - PORT=4000
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - ELASTICSEARCH_ENABLED=${ELASTICSEARCH_ENABLED:-false}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
       - FRONTEND_URL=${FRONTEND_URL:-https://scheduler.ramkumar.app}
       - JWT_SECRET=${JWT_SECRET}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - ADMIN_ENABLED=${ADMIN_ENABLED:-true}
+      - ALLOW_DEV_AUTH=false
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL:-https://scheduler.ramkumar.app/api/auth/google/callback}
@@ -52,10 +69,19 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
     networks:
       - internal-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 350M
+        reservations:
+          memory: 100M
 
   # ---------------------------------------------------------------------------
   # Worker Process: BullMQ Queue Consumer & SMTP Dispatch Engine
@@ -65,31 +91,47 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: reachinbox_worker_prod
-    restart: always
+    restart: unless-stopped
     command: ["node", "dist/worker.js"]
     environment:
       - NODE_ENV=production
       - DATABASE_URL=${DATABASE_URL}
       - REDIS_URL=redis://redis:6379
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - ELASTICSEARCH_ENABLED=${ELASTICSEARCH_ENABLED:-false}
+      - ELASTICSEARCH_URL=${ELASTICSEARCH_URL:-http://elasticsearch:9200}
       - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-5}
       - MIN_SEND_DELAY_MS=${MIN_SEND_DELAY_MS:-200}
     depends_on:
       redis:
         condition: service_healthy
-      elasticsearch:
-        condition: service_healthy
     networks:
       - internal-net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 350M
+        reservations:
+          memory: 100M
 
   # ---------------------------------------------------------------------------
-  # Redis 7: Job queue store with Append-Only File (AOF) persistence
+  # Redis 7: Job queue store with Append-Only File (AOF) & noeviction policy
+  # (noeviction guarantees BullMQ delayed keys & locks are never dropped)
   # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: reachinbox_redis_prod
-    restart: always
-    command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
+    command: [
+      "redis-server",
+      "--appendonly", "yes",
+      "--maxmemory", "150mb",
+      "--maxmemory-policy", "noeviction"
+    ]
     volumes:
       - redis_prod_data:/data
     networks:
@@ -99,14 +141,27 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 200M
+        reservations:
+          memory: 50M
 
   # ---------------------------------------------------------------------------
-  # Elasticsearch 8: Full-text indexing cluster (512MB heap for t3.small memory)
+  # Elasticsearch 8: Optional full-text cluster (activated via --profile search)
   # ---------------------------------------------------------------------------
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
     container_name: reachinbox_es_prod
-    restart: always
+    profiles:
+      - search
+    restart: unless-stopped
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -121,6 +176,17 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 512M
 
 networks:
   internal-net:

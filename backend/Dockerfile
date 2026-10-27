@@ -43,6 +43,10 @@ RUN npx prisma generate
 # Copy compiled JavaScript output
 COPY --from=builder /app/dist ./dist
 
+# Run as non-root user (built-in alpine node user, UID 1000)
+RUN chown -R node:node /app
+USER node
+
 EXPOSE 4000
 
 CMD ["node", "dist/server.js"]
