@@ -71,12 +71,12 @@ export const Navbar: React.FC<Props> = ({
             )}
           </a>
 
-          {/* Bull Board Link (Relative path with demo token for seamless access) */}
+          {/* Bull Board Link */}
           <a
-            href="/admin/queues?token=reachinbox2026"
+            href="/admin/queues"
             target="_blank"
             rel="noopener noreferrer"
-            title="BullMQ Queue Dashboard (Credentials: admin / reachinbox2026)"
+            title="BullMQ Queue Dashboard"
             className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700/60 transition"
           >
             <ExternalLink className="w-3.5 h-3.5 text-indigo-400" />

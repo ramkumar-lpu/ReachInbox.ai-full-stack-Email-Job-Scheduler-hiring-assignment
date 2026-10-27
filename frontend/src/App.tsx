@@ -17,6 +17,8 @@ import {
   Users,
   Flame,
   Info,
+  ShieldCheck,
+  ExternalLink,
 } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -166,6 +168,44 @@ export const App: React.FC = () => {
             <span className="text-[11px] text-slate-400">Rate-limited tenants</span>
           </div>
         </div>
+
+        {/* Admin Access Section for Hiring Reviewers */}
+        <section
+          aria-labelledby="admin-access-heading"
+          className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-slate-900 via-slate-900/90 to-indigo-950/30 border border-slate-800 hover:border-indigo-500/30 transition shadow-lg shadow-black/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
+        >
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center shrink-0 text-indigo-400">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 id="admin-access-heading" className="text-sm font-semibold text-white tracking-wide">
+                  Admin Access
+                </h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-amber-400/10 text-amber-300 border border-amber-400/20">
+                  For authorized hiring reviewers
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 flex flex-wrap items-center gap-1.5">
+                <span>Manage BullMQ email queues, retry failed jobs, and monitor worker concurrency.</span>
+                <span className="text-slate-300">
+                  Username: <code className="px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700 text-indigo-300 font-mono text-[11px]">admin</code>
+                </span>
+              </p>
+            </div>
+          </div>
+
+          <a
+            href="/admin/queues"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs sm:text-sm font-medium bg-indigo-600 hover:bg-indigo-500 text-white shadow-md shadow-indigo-600/25 transition transform hover:-translate-y-0.5 shrink-0 self-stretch sm:self-auto justify-center"
+          >
+            <ExternalLink className="w-4 h-4" />
+            <span>Open Admin Dashboard</span>
+          </a>
+        </section>
 
         {/* Tab Selection Navigation */}
         <div className="flex items-center justify-between border-b border-slate-800 pb-3">
