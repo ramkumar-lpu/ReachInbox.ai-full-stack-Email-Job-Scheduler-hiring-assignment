@@ -2,8 +2,9 @@
 
 A persistent email job scheduler, queue processor, and dashboard monorepo built for the ReachInbox hiring assignment.
 
-> **Status**: **Working End-to-End MVP Completed**.  
-> Features Express API, PostgreSQL (Prisma), BullMQ with Redis, Nodemailer with Ethereal SMTP, rate limiting, startup reconciliation, Bull Board, and a React + Vite + Tailwind CSS dashboard.
+> **Status**: **Production Ready & Feature Complete**.  
+> Features Express API, PostgreSQL (Prisma), BullMQ with Redis, Nodemailer with Ethereal SMTP, sliding-window rate limiting, startup reconciliation, Bull Board, Elasticsearch 8 full-text search, Google OAuth 2.0, Slack OAuth integration, and a React + Vite + Tailwind CSS dashboard.  
+> **Production Target**: `https://scheduler.ramkumar.app` on AWS EC2 (`t3.small`, Mumbai) with Caddy Auto-HTTPS and Neon PostgreSQL. See [DEPLOYMENT_RUNBOOK.md](./DEPLOYMENT_RUNBOOK.md).
 
 ---
 
@@ -135,11 +136,13 @@ Frontend runs at `http://127.0.0.1:3000`.
 
 ---
 
-## Verified End-to-End Smoke Test
+---
 
-1. Open `http://127.0.0.1:3000` in your browser.
-2. Click **"Compose New Email"**.
-3. Enter or paste recipient email addresses (e.g. `client@example.com`).
-4. Enter Subject and Body.
-5. Click **"Schedule"**.
-6. The job is queued into BullMQ, dispatched by the worker, sent via Ethereal SMTP, updated in PostgreSQL, and appears under the **"Sent Emails"** tab with its live delivery status and Ethereal preview link logged in the terminal!
+## Production Deployment (AWS EC2 + Caddy + Neon DB)
+
+The production configuration is tailored for an AWS EC2 `t3.small` instance in Mumbai (`ap-south-1`) under domain **`https://scheduler.ramkumar.app`**:
+- **Caddy Web Server:** Sole exposed service (ports 80 & 443) providing automated Let's Encrypt / ZeroSSL HTTPS and static React SPA serving with client-side routing fallback.
+- **Neon PostgreSQL:** External managed database with SSL mode (`DATABASE_URL`), keeping RAM usage within the 2 GiB budget.
+- **Docker Compose:** Decoupled Express API (`reachinbox_backend_prod`), BullMQ worker (`reachinbox_worker_prod`), Redis 7 AOF (`reachinbox_redis_prod`), and Elasticsearch 8 (`reachinbox_es_prod`, 512MB heap).
+- **Runbook:** Step-by-step instructions, AWS security groups, DNS, swap configuration, and rollback commands are documented in **[DEPLOYMENT_RUNBOOK.md](./DEPLOYMENT_RUNBOOK.md)**.
+

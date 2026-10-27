@@ -1,0 +1,26 @@
+# =============================================================================
+# Multi-stage Caddy Dockerfile: Builds React SPA & Serves with Auto-HTTPS
+# =============================================================================
+
+# Stage 1: Build React Production Bundle
+FROM node:22-alpine AS frontend-builder
+
+WORKDIR /app
+
+COPY frontend/package*.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# Stage 2: Production Caddy Server
+FROM caddy:2-alpine
+
+# Copy Caddyfile configuration
+COPY deploy/Caddyfile /etc/caddy/Caddyfile
+
+# Copy compiled React static assets to web root
+COPY --from=frontend-builder /app/dist /srv
+
+EXPOSE 80
+EXPOSE 443

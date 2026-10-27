@@ -1,0 +1,133 @@
+# =============================================================================
+# Production Docker Compose Configuration
+# Target: AWS EC2 (t3.small, Ubuntu x86, ap-south-1)
+# Domain: scheduler.ramkumar.app
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Caddy: Public entrypoint with automated TLS and React SPA static serving
+  # ---------------------------------------------------------------------------
+  caddy:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.caddy
+    container_name: reachinbox_caddy_prod
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    networks:
+      - internal-net
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+
+  # ---------------------------------------------------------------------------
+  # Backend API Server: Express.js REST API & Bull Board Dashboard
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: reachinbox_backend_prod
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - FRONTEND_URL=${FRONTEND_URL:-https://scheduler.ramkumar.app}
+      - JWT_SECRET=${JWT_SECRET}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL:-https://scheduler.ramkumar.app/api/auth/google/callback}
+      - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
+      - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
+      - SLACK_CALLBACK_URL=${SLACK_CALLBACK_URL:-https://scheduler.ramkumar.app/api/slack/callback}
+      - EMBEDDED_WORKER=false # Worker is decoupled in dedicated container below
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - internal-net
+
+  # ---------------------------------------------------------------------------
+  # Worker Process: BullMQ Queue Consumer & SMTP Dispatch Engine
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: reachinbox_worker_prod
+    restart: always
+    command: ["node", "dist/worker.js"]
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=redis://redis:6379
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - WORKER_CONCURRENCY=${WORKER_CONCURRENCY:-5}
+      - MIN_SEND_DELAY_MS=${MIN_SEND_DELAY_MS:-200}
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - internal-net
+
+  # ---------------------------------------------------------------------------
+  # Redis 7: Job queue store with Append-Only File (AOF) persistence
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: reachinbox_redis_prod
+    restart: always
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_prod_data:/data
+    networks:
+      - internal-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Elasticsearch 8: Full-text indexing cluster (512MB heap for t3.small memory)
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: reachinbox_es_prod
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - es_prod_data:/usr/share/elasticsearch/data
+    networks:
+      - internal-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+networks:
+  internal-net:
+    driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:
+  redis_prod_data:
+  es_prod_data:

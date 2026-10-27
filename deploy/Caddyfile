@@ -1,0 +1,49 @@
+# =============================================================================
+# Caddyfile: HTTPS Reverse Proxy & Static SPA Web Server
+# Domain: scheduler.ramkumar.app
+# Automatic TLS certificates handled by Let's Encrypt / ZeroSSL
+# =============================================================================
+
+scheduler.ramkumar.app {
+    root * /srv
+    encode gzip zstd
+
+    # Route API endpoints directly to Express backend service
+    handle /api/* {
+        reverse_proxy backend:4000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Route Bull Board queue monitoring UI to Express backend
+    handle /admin/queues* {
+        reverse_proxy backend:4000 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Public Health Probe
+    handle /health {
+        reverse_proxy backend:4000
+    }
+
+    # Static SPA serving with client-side routing fallback to index.html
+    handle {
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Security & Privacy Headers
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
