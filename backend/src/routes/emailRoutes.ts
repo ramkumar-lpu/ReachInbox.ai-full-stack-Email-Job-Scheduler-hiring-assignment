@@ -21,6 +21,7 @@ const scheduleEmailSchema = z.object({
   startTime: z.string().datetime({ offset: true }).optional(),
   delaySeconds: z.coerce.number().int().min(0).default(0),
   hourlyLimit: z.coerce.number().int().min(1).max(1000).default(50),
+  sendNow: z.boolean().default(false),
 });
 
 /**
@@ -168,10 +169,16 @@ emailRouter.get('/search', async (req: Request, res: Response, next: NextFunctio
 });
 
 /**
- * POST /api/emails/schedule
- * Validates, records batch & emails in PostgreSQL, conditionally indexes into ES, and enqueues delayed BullMQ jobs.
+ * Shared handler for both /schedule and /send-now.
+ * Validates, records batch & emails in PostgreSQL, conditionally indexes into ES,
+ * and enqueues BullMQ jobs (immediate without intentional delay if sendNow is true, delayed otherwise).
  */
-emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunction) => {
+async function handleScheduleOrSend(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  forceSendNow?: boolean
+) {
   try {
     const user = await resolveUser(req);
     if (!user) {
@@ -183,6 +190,7 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
     }
 
     const validated = scheduleEmailSchema.parse(req.body);
+    const isSendNow = forceSendNow ?? (validated.sendNow || !validated.startTime);
 
     // 1. Resolve sender
     let sender = null;
@@ -214,7 +222,11 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
     const uniqueRecipients = Array.from(new Set(validated.recipients));
 
     // 3. Determine start time
-    const baseTime = validated.startTime ? new Date(validated.startTime) : new Date();
+    const baseTime = isSendNow
+      ? new Date()
+      : validated.startTime
+      ? new Date(validated.startTime)
+      : new Date();
     const effectiveStartTime = isNaN(baseTime.getTime()) ? new Date() : baseTime;
 
     // 4. Create EmailBatch record in PostgreSQL
@@ -232,15 +244,22 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
 
     const scheduledEmails = [];
 
-    // 5. Persist Email records and schedule BullMQ delayed jobs
+    // 5. Persist Email records and schedule BullMQ jobs
     for (let i = 0; i < uniqueRecipients.length; i++) {
       const recipient = uniqueRecipients[i]!;
-      // Calculate scheduled time with incremental delay: T + (i * delaySeconds)
-      const scheduledAt = new Date(
-        effectiveStartTime.getTime() + i * validated.delaySeconds * 1000
-      );
 
-      // Create individual PostgreSQL email row
+      // Calculate scheduled time:
+      // If sendNow is true:
+      // - First recipient has scheduledAt = effectiveStartTime (now)
+      // - Subsequent recipients pace out if delaySeconds > 0
+      // If scheduled:
+      // - Starts from effectiveStartTime + (i * delaySeconds)
+      const interEmailOffsetMs = i * validated.delaySeconds * 1000;
+      const scheduledAt = new Date(effectiveStartTime.getTime() + interEmailOffsetMs);
+
+      // Create individual PostgreSQL email row with initial status 'scheduled'
+      // Note: Send Now starts in 'scheduled' and transitions to 'processing' -> 'sent'
+      // when the worker delivers it, ensuring it is never falsely marked sent.
       const email = await prisma.email.create({
         data: {
           batchId: batch.id,
@@ -255,10 +274,24 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
         },
       });
 
-      // Calculate initial delay relative to now
-      const delayMs = Math.max(0, scheduledAt.getTime() - Date.now());
+      // Calculate delay relative to now
+      // If sendNow and recipient 0: delayMs is strictly 0 (no future delay)
+      let delayMs = 0;
+      if (isSendNow) {
+        delayMs = i === 0 ? 0 : Math.max(0, scheduledAt.getTime() - Date.now());
+      } else {
+        delayMs = Math.max(0, scheduledAt.getTime() - Date.now());
+      }
 
-      // Create delayed BullMQ job with stable UUID jobId
+      // BullMQ job options:
+      // For immediate jobs (delayMs === 0), omit delay so BullMQ places it in the 'wait' queue directly.
+      const jobOptions: { jobId: string; delay?: number } = {
+        jobId: email.id, // Stable idempotency identifier
+      };
+      if (delayMs > 0) {
+        jobOptions.delay = delayMs;
+      }
+
       await emailQueue.add(
         'send-email',
         {
@@ -268,10 +301,7 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
           senderId: sender.id,
           recipient: email.recipient,
         },
-        {
-          jobId: email.id, // Stable idempotency identifier
-          delay: delayMs,
-        }
+        jobOptions
       );
 
       // Link job ID back to email record
@@ -308,9 +338,12 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
 
     res.status(201).json({
       success: true,
-      message: `Successfully scheduled ${scheduledEmails.length} email(s).`,
+      message: isSendNow
+        ? `Successfully queued ${scheduledEmails.length} email(s) for immediate delivery.`
+        : `Successfully scheduled ${scheduledEmails.length} email(s).`,
       batchId: batch.id,
       scheduledCount: scheduledEmails.length,
+      sendNow: isSendNow,
       emails: scheduledEmails,
     });
   } catch (err) {
@@ -324,6 +357,24 @@ emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunc
     }
     next(err);
   }
+}
+
+/**
+ * POST /api/emails/schedule
+ * Validates, records batch & emails in PostgreSQL, conditionally indexes into ES,
+ * and enqueues BullMQ jobs (delayed for scheduled sends, immediate if sendNow: true).
+ */
+emailRouter.post('/schedule', async (req: Request, res: Response, next: NextFunction) => {
+  await handleScheduleOrSend(req, res, next);
+});
+
+/**
+ * POST /api/emails/send-now
+ * Dedicated endpoint for immediate dispatch.
+ * Enqueues emails for immediate BullMQ processing without delay.
+ */
+emailRouter.post('/send-now', async (req: Request, res: Response, next: NextFunction) => {
+  await handleScheduleOrSend(req, res, next, true);
 });
 
 /**

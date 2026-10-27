@@ -52,8 +52,10 @@ export async function scheduleEmails(payload: SchedulePayload): Promise<{
   success: boolean;
   message: string;
   scheduledCount: number;
+  sendNow?: boolean;
 }> {
-  const res = await fetch(`${API_BASE}/schedule`, {
+  const endpoint = payload.sendNow ? `${API_BASE}/send-now` : `${API_BASE}/schedule`;
+  const res = await fetch(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -61,7 +63,7 @@ export async function scheduleEmails(payload: SchedulePayload): Promise<{
 
   const json = await res.json();
   if (!res.ok || !json.success) {
-    throw new Error(json.error || json.message || 'Failed to schedule emails');
+    throw new Error(json.error || json.message || 'Failed to dispatch emails');
   }
 
   return json;

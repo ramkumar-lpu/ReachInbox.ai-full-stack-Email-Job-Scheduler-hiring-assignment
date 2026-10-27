@@ -7,7 +7,7 @@ interface Props {
   isOpen: boolean;
   onClose: () => void;
   senders: SenderRecord[];
-  onSuccess: () => void;
+  onSuccess: (isImmediate?: boolean) => void;
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -74,8 +74,9 @@ export const ComposeModal: React.FC<Props> = ({
       return;
     }
 
+    const isNow = sendType === 'now';
     let startTimeISO: string | undefined = undefined;
-    if (sendType === 'scheduled') {
+    if (!isNow) {
       if (!scheduledDateTime) {
         setError('Please select a scheduled date and time.');
         return;
@@ -91,12 +92,13 @@ export const ComposeModal: React.FC<Props> = ({
         body: body.trim(),
         recipients: detectedEmails,
         startTime: startTimeISO,
-        delaySeconds,
+        delaySeconds: isNow && detectedEmails.length === 1 ? 0 : delaySeconds,
         hourlyLimit,
+        sendNow: isNow,
       };
 
       await scheduleEmails(payload);
-      onSuccess();
+      onSuccess(isNow);
       onClose();
       // Reset form
       setSubject('');
@@ -106,7 +108,7 @@ export const ComposeModal: React.FC<Props> = ({
       setScheduledDateTime('');
       setDelaySeconds(0);
     } catch (err: unknown) {
-      setError((err as Error).message || 'Failed to schedule emails');
+      setError((err as Error).message || 'Failed to dispatch emails');
     } finally {
       setLoading(false);
     }
@@ -125,7 +127,11 @@ export const ComposeModal: React.FC<Props> = ({
             </div>
             <div>
               <h2 className="text-base font-semibold text-white">Compose New Campaign</h2>
-              <p className="text-xs text-slate-400">Schedule persistent jobs via BullMQ & Redis</p>
+              <p className="text-xs text-slate-400">
+                {sendType === 'now'
+                  ? 'Immediate dispatch into BullMQ processing queue'
+                  : 'Schedule persistent jobs via BullMQ & Redis'}
+              </p>
             </div>
           </div>
           <button
@@ -341,12 +347,14 @@ export const ComposeModal: React.FC<Props> = ({
               {loading ? (
                 <>
                   <Clock className="w-4 h-4 animate-spin" />
-                  Scheduling Queue...
+                  {sendType === 'now' ? 'Dispatching Immediately...' : 'Scheduling Queue...'}
                 </>
               ) : (
                 <>
-                  <Send className="w-4 h-4" />
-                  Schedule {detectedEmails.length > 0 ? `(${detectedEmails.length})` : ''}
+                  {sendType === 'now' ? <Send className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
+                  {sendType === 'now'
+                    ? `Send Now ${detectedEmails.length > 0 ? `(${detectedEmails.length})` : ''}`
+                    : `Schedule Campaign ${detectedEmails.length > 0 ? `(${detectedEmails.length})` : ''}`}
                 </>
               )}
             </button>

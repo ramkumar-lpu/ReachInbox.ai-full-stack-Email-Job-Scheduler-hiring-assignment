@@ -52,4 +52,5 @@ export interface SchedulePayload {
   startTime?: string;
   delaySeconds: number;
   hourlyLimit: number;
+  sendNow?: boolean;
 }

@@ -78,9 +78,17 @@ export const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [loadData]);
 
-  const handleComposeSuccess = () => {
-    setSuccessBanner('New email campaign successfully scheduled into BullMQ queue!');
+  const handleComposeSuccess = (isImmediate?: boolean) => {
+    if (isImmediate) {
+      setSuccessBanner('Email campaign dispatched immediately! Monitoring delivery in Sent tab.');
+      setActiveTab('sent');
+    } else {
+      setSuccessBanner('New email campaign successfully scheduled into BullMQ queue!');
+      setActiveTab('scheduled');
+    }
     loadData();
+    // Re-check after 1.5s to capture the worker's processing completion and state change
+    setTimeout(loadData, 1500);
     setTimeout(() => setSuccessBanner(null), 5000);
   };
 
